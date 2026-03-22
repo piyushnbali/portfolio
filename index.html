@@ -191,6 +191,15 @@
     .stat-val { color: var(--green); font-weight: 600; min-width: 80px; }
     .stat-label { color: var(--text); }
 
+    /* Notes styles */
+    .note-item { padding: 8px 0; border-bottom: 1px solid var(--border); }
+    .note-item:last-child { border-bottom: none; }
+    .note-id { color: var(--dim); font-size: .75rem; }
+    .note-title { color: var(--green); font-weight: 600; }
+    .note-body { color: var(--text); font-size: .9rem; margin: 2px 0; }
+    .note-time { color: var(--dim); font-size: .75rem; }
+    .note-locked { color: var(--red); }
+
     /* LeetCode styles */
     .lc-card { margin: 8px 0; }
     .lc-total { font-size: 1.6rem; font-weight: 600; color: var(--green); }
@@ -202,6 +211,35 @@
     .lc-bar-count { min-width: 80px; text-align: right; font-size: .85rem; color: var(--text); }
     .lc-ranking { margin-top: 10px; color: var(--dim); font-size: .85rem; }
 
+    /* Floating download button */
+    .dl-btn {
+      position: fixed;
+      bottom: 24px;
+      right: 24px;
+      background: var(--green);
+      color: var(--bg);
+      border: none;
+      padding: 12px 20px;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: .85rem;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      box-shadow: 0 4px 20px rgba(0,255,156,.3);
+      transition: transform .15s, box-shadow .15s;
+      z-index: 100;
+      text-decoration: none;
+    }
+    .dl-btn:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 6px 28px rgba(0,255,156,.45);
+    }
+    .dl-btn:active { transform: translateY(0); }
+    .dl-btn svg { width: 16px; height: 16px; fill: currentColor; }
+
     @media (max-width: 600px) {
       html { font-size: 12px; }
       .output { max-height: 65vh; padding: 12px; }
@@ -212,6 +250,11 @@
   </style>
 </head>
 <body>
+  <a class="dl-btn" href="Piyush_Bali.pdf" download="Piyush_Bali_Resume.pdf">
+    <svg viewBox="0 0 24 24"><path d="M12 16l-5-5h3V4h4v7h3l-5 5zm-7 2h14v2H5v-2z"/></svg>
+    Download Resume
+  </a>
+
   <div class="terminal">
     <div class="title-bar">
       <div class="dot r"></div>
@@ -258,6 +301,68 @@ const COMMANDS = {
 
 const LC_API = 'https://leetcode.com/graphql';
 
+// ── Notes System (secret-protected) ──
+const SECRET_HASH = '299b287696a383da5e8cbb7e9bcd5cdca8a111dbd4b0f1acdc971e8706990cb9'; // SHA-256 of passphrase
+let notesUnlocked = false;
+
+let encryptionKey = null; // AES-GCM key derived from passphrase, held in memory only
+
+async function sha256(text) {
+  const data = new TextEncoder().encode(text);
+  const hash = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function deriveKey(passphrase) {
+  const enc = new TextEncoder();
+  const keyMaterial = await crypto.subtle.importKey('raw', enc.encode(passphrase), 'PBKDF2', false, ['deriveKey']);
+  const salt = enc.encode('piyush-portfolio-salt-v1');
+  return crypto.subtle.deriveKey(
+    { name: 'PBKDF2', salt, iterations: 100000, hash: 'SHA-256' },
+    keyMaterial,
+    { name: 'AES-GCM', length: 256 },
+    false,
+    ['encrypt', 'decrypt']
+  );
+}
+
+async function encryptText(text) {
+  if (!encryptionKey) return null;
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const encoded = new TextEncoder().encode(text);
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, encryptionKey, encoded);
+  const buf = new Uint8Array(iv.length + ciphertext.byteLength);
+  buf.set(iv);
+  buf.set(new Uint8Array(ciphertext), iv.length);
+  return btoa(String.fromCharCode(...buf));
+}
+
+async function decryptText(b64) {
+  if (!encryptionKey) return null;
+  try {
+    const raw = Uint8Array.from(atob(b64), c => c.charCodeAt(0));
+    const iv = raw.slice(0, 12);
+    const ciphertext = raw.slice(12);
+    const decrypted = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, encryptionKey, ciphertext);
+    return new TextDecoder().decode(decrypted);
+  } catch { return '[decryption failed]'; }
+}
+
+async function getNotes() {
+  try {
+    const encrypted = localStorage.getItem('pb_notes_enc');
+    if (!encrypted) return [];
+    const json = await decryptText(encrypted);
+    return JSON.parse(json || '[]');
+  } catch { return []; }
+}
+
+async function saveNotes(notes) {
+  const json = JSON.stringify(notes);
+  const encrypted = await encryptText(json);
+  localStorage.setItem('pb_notes_enc', encrypted);
+}
+
 const ALIASES = { exp: 'experience', edu: 'education', ach: 'achievements', lc: 'leetcode' };
 
 // ── Welcome ──
@@ -281,6 +386,7 @@ function cmdHelp() {
   <span class="help-cmd">contact</span><span class="help-desc">Get in touch</span>
   <span class="help-cmd">resume</span><span class="help-desc">Download resume as PDF</span>
   <span class="help-cmd">leetcode</span><span class="help-desc">Live LeetCode stats & progress</span>
+  <span class="help-cmd">notes</span><span class="help-desc">Secret notepad (password-protected)</span>
   <span class="help-cmd">neofetch</span><span class="help-desc">System info, engineer edition</span>
   <span class="help-cmd">all</span><span class="help-desc">Display full resume</span>
   <span class="help-cmd">clear</span><span class="help-desc">Clear the terminal</span>
@@ -566,6 +672,153 @@ function fetchLeetCode(containerId) {
   });
 }
 
+// ── Notes command dispatcher ──
+function cmdNotes(args) {
+  if (!args || args.length === 0) {
+    return notesHelp();
+  }
+  const sub = args[0].toLowerCase();
+  const rest = args.slice(1).join(' ');
+
+  if (sub === 'unlock') return notesUnlock(rest);
+  if (sub === 'lock')   return notesLock();
+
+  // All other subcommands require unlock
+  if (!notesUnlocked) {
+    return `<span class="note-locked">Access denied.</span> <span class="d">Use <span class="g">notes unlock &lt;secret&gt;</span> first.</span>`;
+  }
+
+  if (sub === 'add')    return notesAdd(rest);
+  if (sub === 'list' || sub === 'ls') return notesList();
+  if (sub === 'get')    return notesGet(rest);
+  if (sub === 'rm' || sub === 'delete') return notesDelete(rest);
+  if (sub === 'clear')  return notesClearAll();
+  return notesHelp();
+}
+
+function notesHelp() {
+  return `
+<div class="section-title">Notes — Secret Notepad</div>
+<div class="help-grid">
+  <span class="help-cmd">notes unlock</span><span class="help-desc">&lt;secret&gt; — Authenticate to access notes</span>
+  <span class="help-cmd">notes lock</span><span class="help-desc">Lock notes access</span>
+  <span class="help-cmd">notes add</span><span class="help-desc">&lt;text&gt; — Add a new note</span>
+  <span class="help-cmd">notes list</span><span class="help-desc">Show all saved notes</span>
+  <span class="help-cmd">notes get</span><span class="help-desc">&lt;id&gt; — View a specific note</span>
+  <span class="help-cmd">notes rm</span><span class="help-desc">&lt;id&gt; — Delete a note</span>
+  <span class="help-cmd">notes clear</span><span class="help-desc">Delete all notes</span>
+</div>
+<div class="d" style="margin-top:8px">Status: ${notesUnlocked
+    ? '<span class="g">Unlocked</span>'
+    : '<span class="r">Locked</span> — authenticate with <span class="g">notes unlock &lt;secret&gt;</span>'
+  }</div>`;
+}
+
+function notesUnlock(passphrase) {
+  if (!passphrase) return `<span class="r">Usage:</span> notes unlock &lt;secret&gt;`;
+  const containerId = 'nu-' + Date.now();
+  sha256(passphrase).then(async hash => {
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    if (hash === SECRET_HASH) {
+      notesUnlocked = true;
+      encryptionKey = await deriveKey(passphrase);
+      el.innerHTML = `<span class="g">&#10003; Access granted.</span> <span class="d">Notes are end-to-end encrypted. Type <span class="g">notes list</span> to view.</span>`;
+    } else {
+      el.innerHTML = `<span class="r">&#10007; Invalid passphrase.</span>`;
+    }
+  });
+  return `<div id="${containerId}"><span class="d">Verifying...</span></div>`;
+}
+
+function notesLock() {
+  notesUnlocked = false;
+  encryptionKey = null;
+  return `<span class="y">&#128274;</span> Notes locked. Encryption key cleared from memory.`;
+}
+
+function notesAdd(text) {
+  if (!text) return `<span class="r">Usage:</span> notes add &lt;your note text&gt;`;
+  const containerId = 'na-' + Date.now();
+  (async () => {
+    const notes = await getNotes();
+    const note = { id: Date.now().toString(36), text, created: new Date().toISOString() };
+    notes.push(note);
+    await saveNotes(notes);
+    const el = document.getElementById(containerId);
+    if (el) el.innerHTML = `<span class="g">&#10003;</span> Note saved & encrypted <span class="d">[${note.id}]</span>`;
+  })();
+  return `<div id="${containerId}"><span class="d">Encrypting...</span></div>`;
+}
+
+function notesList() {
+  const containerId = 'nl-' + Date.now();
+  (async () => {
+    const notes = await getNotes();
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    if (notes.length === 0) {
+      el.innerHTML = `<span class="d">No notes yet. Use <span class="g">notes add &lt;text&gt;</span> to create one.</span>`;
+      return;
+    }
+    let html = `<div class="section-title">Notes (${notes.length})</div>`;
+    for (const n of notes) {
+      const d = new Date(n.created);
+      const time = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+                 + ' ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+      html += `
+      <div class="note-item">
+        <span class="note-id">[${n.id}]</span> <span class="note-body">${esc(n.text)}</span>
+        <div class="note-time">${time}</div>
+      </div>`;
+    }
+    el.innerHTML = html;
+    output.scrollTop = output.scrollHeight;
+  })();
+  return `<div id="${containerId}"><span class="d">Decrypting...</span></div>`;
+}
+
+function notesGet(id) {
+  if (!id) return `<span class="r">Usage:</span> notes get &lt;id&gt;`;
+  const containerId = 'ng-' + Date.now();
+  (async () => {
+    const notes = await getNotes();
+    const note = notes.find(n => n.id === id.trim());
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    if (!note) { el.innerHTML = `<span class="r">Note not found:</span> ${esc(id)}`; return; }
+    const d = new Date(note.created);
+    const time = d.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' })
+               + ' ' + d.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit' });
+    el.innerHTML = `
+    <div class="section-title">Note [${note.id}]</div>
+    <div class="note-body">${esc(note.text)}</div>
+    <div class="note-time" style="margin-top:6px">Created: ${time}</div>`;
+  })();
+  return `<div id="${containerId}"><span class="d">Decrypting...</span></div>`;
+}
+
+function notesDelete(id) {
+  if (!id) return `<span class="r">Usage:</span> notes rm &lt;id&gt;`;
+  const containerId = 'nd-' + Date.now();
+  (async () => {
+    let notes = await getNotes();
+    const idx = notes.findIndex(n => n.id === id.trim());
+    const el = document.getElementById(containerId);
+    if (!el) return;
+    if (idx === -1) { el.innerHTML = `<span class="r">Note not found:</span> ${esc(id)}`; return; }
+    notes.splice(idx, 1);
+    await saveNotes(notes);
+    el.innerHTML = `<span class="g">&#10003;</span> Note <span class="d">[${esc(id)}]</span> deleted.`;
+  })();
+  return `<div id="${containerId}"><span class="d">Deleting...</span></div>`;
+}
+
+function notesClearAll() {
+  localStorage.removeItem('pb_notes_enc');
+  return `<span class="g">&#10003;</span> All notes cleared.`;
+}
+
 function cmdResume() {
   const a = document.createElement('a');
   a.href = 'Piyush_Bali.pdf';
@@ -593,10 +846,37 @@ function append(html) {
 }
 
 function exec(raw) {
-  const cmd = raw.trim().toLowerCase();
-  if (!cmd) return;
+  const trimmed = raw.trim();
+  if (!trimmed) return;
 
-  append(`<div class="cmd-echo"><span class="g">piyush</span><span class="c">@portfolio</span><span class="y"> $ </span>${esc(raw)}</div>`);
+  const parts = trimmed.split(/\s+/);
+  const cmd = parts[0].toLowerCase();
+
+  // Mask passphrase in notes unlock command
+  let displayCmd = raw;
+  if (cmd === 'notes' || cmd === 'note') {
+    const sub = (parts[1] || '').toLowerCase();
+    if (sub === 'unlock' && parts.length > 2) {
+      displayCmd = parts.slice(0, 2).join(' ') + ' ' + '*'.repeat(parts.slice(2).join(' ').length);
+    }
+  }
+
+  append(`<div class="cmd-echo"><span class="g">piyush</span><span class="c">@portfolio</span><span class="y"> $ </span>${esc(displayCmd)}</div>`);
+
+  // Handle 'notes' as a multi-arg command
+  if (cmd === 'notes' || cmd === 'note') {
+    const result = cmdNotes(parts.slice(1));
+    if (result) append(`<div class="block">${result}</div><br>`);
+    output.scrollTop = output.scrollHeight;
+    return;
+  }
+
+  // Handle 'sudo hire me' easter egg
+  if (trimmed.toLowerCase() === 'sudo hire me') {
+    append(`<div class="block"><span class="g b">&#10003; Request approved.</span> Reach out at <a href="mailto:pnbali.4141@gmail.com">pnbali.4141@gmail.com</a></div><br>`);
+    output.scrollTop = output.scrollHeight;
+    return;
+  }
 
   const resolved = ALIASES[cmd] || cmd;
   const fn = COMMANDS[resolved];
@@ -615,6 +895,18 @@ function exec(raw) {
 const history = [];
 let histIdx = -1;
 
+// Mask input when typing 'notes unlock ...'
+input.addEventListener('input', () => {
+  const val = input.value.toLowerCase().trim();
+  if (val.startsWith('notes unlock ') || val.startsWith('note unlock ')) {
+    input.style.webkitTextSecurity = 'disc';
+    input.style.textSecurity = 'disc';
+  } else {
+    input.style.webkitTextSecurity = 'none';
+    input.style.textSecurity = 'none';
+  }
+});
+
 input.addEventListener('keydown', e => {
   if (e.key === 'Enter') {
     const val = input.value;
@@ -622,6 +914,8 @@ input.addEventListener('keydown', e => {
     histIdx = -1;
     exec(val);
     input.value = '';
+    input.style.webkitTextSecurity = 'none';
+    input.style.textSecurity = 'none';
   } else if (e.key === 'ArrowUp') {
     e.preventDefault();
     if (histIdx < history.length - 1) { histIdx++; input.value = history[histIdx]; }
@@ -633,7 +927,7 @@ input.addEventListener('keydown', e => {
     e.preventDefault();
     const partial = input.value.trim().toLowerCase();
     if (!partial) return;
-    const allCmds = [...Object.keys(COMMANDS), ...Object.keys(ALIASES)];
+    const allCmds = [...Object.keys(COMMANDS), ...Object.keys(ALIASES), 'notes', 'sudo hire me'];
     const match = allCmds.filter(c => c.startsWith(partial));
     if (match.length === 1) input.value = match[0];
   } else if (e.key === 'l' && e.ctrlKey) {
